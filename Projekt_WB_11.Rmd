@@ -1,0 +1,520 @@
+---
+title: "Projekt zaliczeniowy - metody i modele bayesowskie"
+author: "Magdalena Lamczyk"
+date: "`r Sys.Date()`"
+output: 
+  pdf_document: default
+  word_document: default
+  html_document: default
+---
+
+\newpage
+
+# Zadanie 11
+
+W pakiecie `bayesrules` znajdują się dane `bald_eagles`. Dane stanowią zbiór informacji o orłach widzianych w Ontario w Kanadzie. Przeanalizuj zależność zmiennej `count` od zmiennych `hours` oraz `year`. Zastosuj podejście bayesowskie.
+
+Możemy załadować biblioteki potrzebne do analizy bayesowskiej i wizualizacji danych:
+```{r warning=FALSE, message=FALSE}
+library(bayesrules)
+library(rstanarm)
+library(bayesplot)
+library(tidybayes)
+library(tidyverse)
+library(broom.mixed)
+library(ggplot2)
+library(cowplot)
+```
+
+Zbiór danych `bald_eagles` z pakietu `bayesrules`dotyczy liczby bielików (Bald Eagle). Dane były zbierane corocznie w późnym grudniu w latach 1981–2017 przez obserwatorów ptaków w rejonie Ontario w Kanadzie.
+```{r}
+data("bald_eagles")
+```
+
+## Eksploracyjna analiza zbioru danych
+
+Możemy sprawdzić wymiar zbioru oraz nazwy kolumn:
+```{r}
+dim(bald_eagles)
+names(bald_eagles)
+```
+
+Ramka danych zawiera 37 wierszy i 5 zmiennych. Każdy wiersz reprezentuje obserwacje bielików w danym roku.
+
+| Zmienna            | Opis                                                                    |
+|--------------------|-------------------------------------------------------------------------|
+| **year**           | Rok zbierania danych                                                    |
+| **count**          | Liczba zaobserwowanych ptaków                                           |
+| **hours**          | Całkowita liczba godzin poświęconych na obserwację                      |
+| **count_per_hour** | Liczba zaobserwowanych ptaków podzielona przez liczbę godzin obserwacji |
+| **count_per_week** | Liczba ptaków na godzinę pomnożona przez 168 godzin w tygodniu          |
+
+Podgląd danych:
+```{r}
+summary(bald_eagles)
+```
+
+```{r}
+head(bald_eagles)
+```
+
+Zmienną objaśnianą $Y$ będzie zmienna numeryczna `count` (liczba obserwacji bielików). Za zmienne objaśniające $X$ przyjmujemy `hours` (liczba godzin obserwacji) i `year` (rok).
+
+Przeanalizujmy zależności zmiennej objaśnianej od zmiennych objaśniających za pomocą wykresów.
+
+Wykres liczby zaobserwowanych bielików w zależności od całkowitej liczby godzin poświęconych na obserwację:
+```{r fig.width=6, fig.height=3, dpi=300}
+ggplot(bald_eagles, aes(x = hours, y = count)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x) +
+  labs(title = "Liczba bielików w zależności od liczby godzin obserwacji",
+       x = "Liczba godzin obserwacji",
+       y = "Liczba bielików")
+```
+
+Niebieska linia przedstawia linię regresji. Szary obszar wokół niej reprezentuje obszar niepewności. Możemy zauważyć dodatnią zależność między liczbą godzin obserwacji a liczbą zaobserwowanych bielików. Więcej godzin obserwacji oznacza więcej obserwacji bielików. Linia regresji wskazuje na trend wzrostowy.
+
+Wykres liczby zaobserwowanych ptaków w zależności od roku:
+```{r fig.width=6, fig.height=3, dpi=300}
+ggplot(bald_eagles, aes(x = year,y = count)) +
+  geom_point() +
+  geom_smooth(method = "lm", formula = y ~ x) +
+  labs(title = "Liczba obserwacji bielików w zależności od roku",
+       x = "Rok",
+       y = "Liczba bielików")
+```
+
+Istnieje dodatnia zależność między liczbą godzin obserwacji a rokiem. Liczba bielików wzrasta w miarę upływu lat. Mamy trend wzrostowy.
+
+Ponieważ `count` (liczba obserwacji bielików) jest zmienną numeryczną, to aby przeanalizować jej zależność od `hours` (liczba godzin obserwacji) i `year` (rok), zastosujemy podejście bayesowskie, budując modele regresyjne.
+
+## Model regresji normalnej
+
+Zacznijmy od dopasowania modelu regresji normalnej. Normalny model regresji zakłada, że zmienna `count` ma rozkład normalny. Zatem załóżmy, że:
+
+1. obserwacje $Y_i$ (liczba bielików w okresie $i$) są niezależne, 
+2. średnia $Y_i$ jest funkcją linową predyktorów: $\mu_i=\beta_0+\beta_1 X_{i1}+\beta_2 X_{i2}$, 
+3. dla danej wartości $X_{i1}$ (liczba godzin obserwacji) i $X_{i2}$ (rok obserwacji), $Y_i$ podlega rozkładowi normalnemu $Y_i \sim \mathcal{N}(\mu_i,\sigma^2)$, gdzie $\mu_i=\beta_0+\beta_1 X_{i1}+\beta_2 X_{i2}$, 
+4. parametry modelu: 
+    - $\beta_0$ to oczekiwana liczba obserwacji bielików, gdy $X_{i1} = 0$ i $X_{i2} = 0$, 
+    - $\beta_1$ to zmiana średniej liczby obserwacji bielików przy wzroście liczby godzin obserwacji o 1, 
+    - $\beta_2$ to zmiana średniej liczby obserwacji bielików przy wzroście roku o 1, 
+    - $\sigma$ to odchylenie standardowe reszt modelu.
+
+
+Założenia a priori:
+$$\beta_0 \sim \mathcal{N}(m_0,s_0^2), \quad \beta_1 \sim \mathcal{N}(m_1,s_1^2), \quad \beta_2 \sim \mathcal{N}(m_2,s_2^2), \quad \sigma \sim \text{Exponential}(l),$$
+gdzie przyjmujemy priory normalne dla współczynników regresji i wykładniczy dla $\sigma$.
+
+Funkcja wiarygdności:
+$$L(\beta_0,\beta_1,\beta_2,\sigma \mid \vec{y})=f(\vec{y} \mid \beta_0,\beta_1,\beta_2,\sigma) = \prod_{i=1}^n f(y_i \mid \beta_0,\beta_1,\beta_2,\sigma),$$
+przy czym zakładamy, że $\beta_0$, $\beta_1$, $\beta_2$, $\sigma$ są niezależne, co daje:
+$$f(\beta_0,\beta_1,\beta_2,\sigma)=f(\beta_0)f(\beta_1)f(\beta_2)f(\sigma).$$
+
+Załóżmy, że typową liczbą obserwowanych bielików jest 3 z odchyleniem standardowym 3. Niech $\beta_{0c}\sim\mathcal{N}(3,3^2)$ będzie a priori dla scentrowanego współczynnika $\beta_{0}$, co oznacza, że dla typowych wartości `hours` i `year` oczekujemy przeciętnie zaobserwować 3 bieliki z odchyleniem standardowym 3.
+
+Dla $\beta_1$ i $\beta_2$ stosujemy priory $\mathcal{N}(0,2.5^2)$, co przed skalowaniem oznacza, że zakładamy brak silnych przekonań co do ich wpływu, pozwalając na możliwe zmiany w zakresie (-5, 5) z 95% prawdopodobieństwem. Ponieważ `autoscale = TRUE`, rzeczywiste wariancje priorów dostosowują się do skali `hours` i `year`, aby zapobiec zbyt szerokim lub zbyt wąskim rozkładom.
+
+Używamy priora wykładniczego $\sigma \sim \text{Exponential}(1)$, który ogranicza odchylenie standardowe reszt do wartości dodatnich. Dzięki `autoscale = TRUE` skala tego priora jest dostosowana do wariancji reszt modelu.
+
+Model uruchomi 4 niezależne łańcuchy MCMC (Markov Chain Monte Carlo), a każdy łańcuch wykona 10000 iteracji (z czego połowa to warm-up, który odrzucamy):
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+eagles_normal_model <- stan_glm(
+  count ~ hours + year, 
+  data = bald_eagles, 
+  family = gaussian,
+  prior_intercept = normal(3, 3),
+  prior = normal(0, 2.5, autoscale = TRUE),
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4,iter = 5000*2, seed = 84735
+)
+```
+
+Funkcja `mcmc_trace()` przedstawia, jak wartości parametrów zmieniają się w kolejnych iteracjach łańcucha MCMC:
+```{r fig.width=6, fig.height=3, dpi=300}
+mcmc_trace(eagles_normal_model)
+```
+
+Linie przypominają szum losowy, więc model osiągnął konwergencję i możemy ufać estymacjom.
+
+Podsumowanie rozkładów a priori dla każdego z parametrów modelu:
+```{r}
+prior_summary(eagles_normal_model)
+```
+
+Z modelu odczytujemy a priori:
+$$\beta_{0c} \sim \mathcal{N}(3,3^2), \quad \beta_1 \sim \mathcal{N}(0,0.24^2), \quad \beta_2 \sim \mathcal{N}(0,0.7^2), \quad \sigma \sim \text{Exponential}(0.33),$$
+gdzie $\beta_{0c}$ oznacza wartość $\beta_0$ dla średniej wartości predyktorów $X_{i1}$ i $X_{i2}$.
+
+Wyświetlimy wykresy autokorelacji i wykresy gęstości estymacji z różnych łańcuchów MCMC:
+```{r fig.width=6, fig.height=3, dpi=300}
+mcmc_dens_overlay(eagles_normal_model)
+mcmc_acf(eagles_normal_model)
+```
+
+Wykresy te sugerują, że nasza symulacja a posteriori wystarczająco się ustabilizowała.
+
+Sprawdzimy dopasowanie modelu za pomocą testu "posterior predictive check" (sprawdzanie przewidywań z posteriori):
+```{r fig.width=6, fig.height=3, dpi=300}
+set.seed(84735)
+pp_check(eagles_normal_model, plotfun = "hist", nreps = 5, bins = 15) +
+  geom_vline(xintercept = 0) +
+  xlab("Liczba obserwacji bielików")
+
+pp_check(eagles_normal_model) +
+  xlab("Liczba obserwacji bielików")
+```
+
+Kontrola predykcyjna a posteriori modelu regresji normalnej obserwacji bielików porównuje obserwowaną liczbę bielików ($y$) do pięciu symulowanych zestawów danych a posteriori ($y_{rep}$) za pomocą histogramów i do 50 symulowanych zestawów danych a posteriori za pomocą wykresów gęstości.
+
+Nasze dane nie pasują do rozkładu normalnego, ponieważ predykcje nie przypominają rzeczywistego rozkładu $Y$. Histogramy symulowanych zestawów danych przypominają rozkład normalny, a nie rozkład liczby bielików. Natomiast gęstości dla predykcji są niższe i bardziej przesunięte na prawo w porównaniu do gęstości rzeczywistych danych.
+
+Zastanówmy się, jaki rozkład ma zmienna objaśniana. Sprawdzimy zbiór wartości zmiennej losowej `count`:
+```{r}
+unique(bald_eagles$count)
+```
+Zmienna `count` przyjmuje tylko wartości całkowite nieujemne, więc zbiorem wartości jest zbiór liczb naturalnych $Y \in \mathbb{N}$.
+
+Rozkład zmiennej objaśnianej jest dyskretny, więc wyświetlimy histogram prawdopodobieństwa dla możliwych wartości zmiennej losowej `count`:
+```{r fig.width=6, fig.height=3, dpi=300}
+ggplot(bald_eagles, aes(x = count)) +
+  geom_histogram(color = "white", breaks = seq(0, 14, by = 1)) +
+  ggtitle("Histogram liczby obserwacji bielików") +
+  xlab("Liczba obserwacji bielików")
+```
+
+Większość danych znajduje się w pobliżu wartości 0–2, a następnie ich liczba stopniowo spada. Rozkład ma długi prawy ogon, co oznacza, że występują niektóre wyższe wartości `count`, ale są one rzadkie. Zatem rozkład jest asymetryczny prawostronnie (dodatnia skośność).
+
+Model Poissona jest odpowiedni do modelowania dyskretnych zliczeń zdarzeń (liczba zaobserwowanych bielików), które teoretycznie nie mają górnej granicy. Jest on szczególnie przydatny w przypadkach, w których zliczenia są asymetryczne prawostronnie i w związku z tym nie można ich rozsądnie przybliżyć za pomocą modelu normalnego.
+
+## Model regresji Poissona
+
+Liczba obserwacji bielików w okresie $i$ ($Y_i$) może być modelowana jako zmienna losowa o rozkładzie Poissona:
+
+$$Y_i \mid \beta_0,\beta_1,\beta_2 \sim \text{Pois}(\lambda_i)$$
+
+gdzie $\lambda_i$ jest oczekiwaną liczbą obserwowanych bielików $E(Y_i \mid \lambda_i)=\lambda_i$. Ponieważ wartości $\lambda_i$ muszą być dodatnie, stosujemy logarytmiczną transformację, aby wyrazić zależność od predyktorów $X_{i1}$ (liczba godzin obserwacji) i $X_{i2}$ (rok obserwacji):
+
+$$\ln(\lambda_i) = \beta_0 + \beta_1 X_{i1} + \beta_2 X_{i2},$$
+
+co można przekształcić do postaci:
+
+$$\lambda_i = e^{\beta_0 + \beta_1 X_{i1} + \beta_2 X_{i2}}.$$
+
+Dzięki temu model zapewnia, że $\lambda_i$ pozostaje dodatnie, a wpływ zmiennych objaśniających jest multiplikatywny.
+
+
+Funkcja wiarygodności dla modelu regresji Poissona, przy założeniu, że $Y_i \mid \lambda_i \sim \text{Pois}(\lambda_i)$, jest iloczynem funkcji masy prawdopodobieństwa Poissona dla każdego z zaobserwowanych przypadków $Y_i$:
+
+$$L(\beta_0,\beta_1,\beta_2)=\prod_{i=1}^{n}\frac{\lambda_i^{y_i}e^{-\lambda_i}}{y_i!}.$$
+gdzie $\lambda_i=e^{\beta_0+\beta_1 X_{i1}+\beta_2 X_{i2}}$ i $y_i$ to zaobserwowane wartości liczby bielików.
+
+Log-wiarygodność to:
+
+$$\ln L(\beta_0,\beta_1,\beta_2)=\sum_{i=1}^{n}\left[y_i(\beta_0+\beta_1 X_{i1}+\beta_2 X_{i2})-e^{\beta_0+\beta_1 X_{i1}+\beta_2 X_{i2}}-\ln(y_i!)\right].$$
+
+Zgodnie z twierdzeniem Bayesa, rozkład a posteriori dla współczynników $\beta_0$, $\beta_1$, $\beta_2$ jest proporcjonalny do iloczynu funkcji wiarygodności oraz funkcji a priori:
+
+$$P(\beta_0,\beta_1,\beta_2 \mid Y) \propto L(\beta_0,\beta_1,\beta_2)\cdot P(\beta_0,\beta_1,\beta_2).$$
+
+### Interpretacja współczynników regresji Poissona
+
+Gdy $X_1$ i $X_2$ są równe 0, $\beta_0$ jest logarytmowaną średnią wartością $Y$, a $e^{\beta_0}$ jest średnią wartością $Y$.
+
+
+Niech $\lambda_x$ oznacza średnią wartość $Y$ dla $X_1 = x$ oraz $\lambda_{x+1}$ oznacza średnią wartość $Y$ dla $X_1 = x + 1$. Jeśli kontrolujemy predyktor $X_2$ i zwiększamy $X_1$ o 1 (z $x$ do $x+1$), to $\beta_1$ jest zmianą w logarytmowanej średniej wartości $Y$, a $e^{\beta_1}$ jest mnożnikową zmianą w (niezlogarytmowanej) średniej wartości $Y$. Innymi słowy:
+
+$$\beta_1 = \ln(\lambda_{x+1}) - \ln(\lambda_x)$$
+
+Zastosowanie modelu regresji Poissona jest odpowiednie pod warunkiem spełnienia następujących założeń: 
+
+- przy warunkowaniu na predyktory $X$, zaobserwowana wartość $Y_i$ w przypadku $i$ jest niezależna od wartości $Y_j$ w przypadku $j$,
+- zmienna zależna $Y$ ma strukturę Poissona, czyli jest dyskretną liczbą zliczeń zdarzeń występujących w określonym przedziale przestrzeni lub czasu,
+- logarytmowana średnia wartość $Y$ może być zapisana jako liniowa kombinacja predyktorów:
+  $$\ln(\lambda_i)=\beta_0+\beta_1 X_{i1}+\beta_2 X_{i2},$$
+- zmienna losowa Poissona $Y$ o parametrze $\lambda$ ma równą średnią i wariancję:  
+  $$E(Y)=Var(Y)=\lambda.$$
+
+Ponieważ współczynniki $\beta_0,\beta_1,\beta_2$ mogą przyjmować dowolną wartość rzeczywistą, wykorzystamy normalne rozkłady a priori. Zakładamy, że rozkłady a priori są niezależne.
+
+Wcześniej zakładaliśmy, że typowa średnia liczba obserwowanych bielików to około $\lambda=3$. Wówczas a priori dla scentrowanego współczynnika $\beta_{0c}$ to 1.1 na skali logarytmicznej:
+$$\ln(\lambda)=\ln(3)\approx 1.1.$$
+
+Jeśli przyjmiemy odchylenie standardowe 0.5 w skali logarytmicznej, to logarytmowana średnia liczba obserwacji prawdopodobnie znajduje się w przedziale $1.1 \pm 2 \times 0.5$, czyli między 0.1 a 2.1. Odpowiada to rzeczywistej liczbie obserwacji bielików w zakresie:
+$$e^{0.1}\approx 1.1\quad \text{do} \quad e^{2.1}\approx 8.2.$$
+
+Zatem $\beta_{0c}\sim\mathcal{N}(1.1,0.5^2)$, natomiast a priori dla $\beta_1, \beta_2$ model dobierze automatycznie.
+
+Definicja modelu regresji Poissona:
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+eagles_poisson_model <- stan_glm(
+  count ~ hours + year, 
+  data = bald_eagles, 
+  family = poisson,
+  prior_intercept = normal(1.1, 0.5),
+  prior = normal(0, 2.5, autoscale = TRUE),
+  chains = 4,iter = 5000*2, seed = 84735
+)
+```
+
+Podsumowanie rozkładów a priori dla każdego z parametrów modelu:
+```{r}
+prior_summary(eagles_poisson_model)
+```
+Z modelu odczytujemy a priori:
+$$\beta_{0c} \sim \mathcal{N}(1.1,0.5^2), \quad \beta_1 \sim \mathcal{N}(0,0.08^2), \quad \beta_2 \sim \mathcal{N}(0,0.23^2),$$
+gdzie $\beta_{0c}$ jest średnią logarytmowaną liczbą obserwowanych bielików dla przeciętnej liczby godzin obserwacji i przeciętnego roku w zbiorze danych.
+
+### Symulacja a posteriori
+
+Zaktualizujemy symulację eagles_poisson_model, wskazując `prior_PD = FALSE` (tj. chcemy symulować a posteriori, a nie a priori):
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+eagles_poisson <- update(eagles_poisson_model, prior_PD = FALSE)
+```
+
+Wykresy śladu MCMC, gęstości i autokorelacji potwierdzają, że nasza symulacja się ustabilizowała:
+```{r fig.width=6, fig.height=3, dpi=300}
+mcmc_trace(eagles_poisson)
+mcmc_dens_overlay(eagles_poisson)
+mcmc_acf(eagles_poisson)
+```
+
+Sprawdzimy dopasowanie modelu za pomocą testu "posterior predictive check" (sprawdzanie przewidywań z posteriori):
+```{r fig.width=6, fig.height=3, dpi=300}
+set.seed(84735)
+pp_check(eagles_poisson, plotfun = "hist", nreps = 5, bins = 15) +
+  xlab("Liczba obserwacji bielików")
+
+pp_check(eagles_poisson) +
+  xlab("Liczba obserwacji bielików")
+```
+
+Histogramy pięciu symulacji a posteriori dla danych obserwacji bielików wykazują podobne odchylenie, zakres i trendy jak obserwowane dane bielików. Chociaż wykres gęstości nie jest najlepszy do prezentacji danych dyskretnych to symulacje całkiem dobrze oddają cechy obserwowaych danych bielików.
+
+### Interpretacja a posteriori
+
+Funkcja `tidy()` służy do uporządkowanego przedstawienia wyników modeli statystycznych w postaci ramki danych (tibble). W tabeli znajdują się oszacowania współczynników regresji (estimate), błędy standardowe (std.error) oraz przedziały ufności na wybranym poziomie 80% (conf.low, conf.high):
+```{r}
+tidy(eagles_poisson, conf.int = TRUE, conf.level = 0.80)
+```
+Posteriorowa mediana zależności między liczbą obserwacji bielików a liczbą godzin obserwacji oraz rokiem może być opisana jako:
+$$\ln(\lambda_i) = -155.7 + 0.003X_{i1} + 0.078X_{i2},$$
+$$\lambda_i = e^{-155.7 + 0.003X_{i1} + 0.078X_{i2}}.$$
+
+Zatem $e^{-155.7} \approx 2.4\times10^{-68}$ jest oczekiwaną liczbą zaobserwowanych bielików dla $X_{i1}=0$ i $X_{i2}=0$. Ponieważ rzeczywiste wartości lat ($X_{i2}$) wahają się od 1981 do 2017, to przy 0 godzin obserwacji w 1981 roku mamy oczekiwaną liczbę obserwacji bielików $\text{exp}(-155.7+0.003\cdot0+0.078\cdot1981) \approx 0.3$, a w 2017 roku $\text{exp}(-155.7+0.003\cdot0+0.078\cdot2017) \approx 5$ bielików.
+
+Współczynnik `hours` ($\beta_1$) ma posteriorową medianę około 0.003. Oznacza to, że jeśli liczba godzin obserwacji bielików wzrośnie o 1, to oczekiwana liczba zaobserwowanych bielików zwiększy się 1.003 razy, czyli o 0.3% ($e^{0.003} \approx 1.003$). Jednak przedział ufności zawiera 0, co sugeruje, że wpływ ten może nie być istotny statystycznie.
+
+Współczynnik `year` ($\beta_2$) ma posteriorową medianę około 0.078. Oznacza to, że z każdym kolejnym rokiem liczba zaobserwowanych bielików rośnie średnio o 8.1% rocznie ($e^{0.078} \approx 1.081$). Istnieje 80% szans, że współczynnik $\beta_2$ mieści się w przedziale od 0.062 do 0.094. Ponieważ przedział ufności nie obejmuje 0, ten wzrost jest istotny statystycznie, co sugeruje poprawę populacji bielików na przestrzeni lat.
+
+### Ocena modelu
+
+Ocenimy, czy model jest sprawiedliwy odpowiadając na pytania:
+
+1. Jak były zbierane dane? 
+    Dane pochodzą z obserwacji liczby bielików w Ontario, Kanada, z lat 1981-2017. Były zbierane przez badaczy lub organizacje zajmujące się monitorowaniem populacji dzikich zwierząt.
+
+2. Przez kogo i po co były zbierane? 
+    Celem zbierania tych danych była ocena stanu populacji bielików, monitorowanie ich liczebności w czasie oraz analiza wpływu różnych czynników (np. liczby godzin obserwacji, zmian w czasie) na liczebność populacji.
+
+3. Jak wyniki modelu mogą wpłynąć na jednostki lub społeczeństwo? 
+    Wyniki mogą wpłynąć na polityki ochrony gatunków zagrożonych, ponieważ mogą dostarczyć informacji o skuteczności dotychczasowych działań ochronnych.
+
+4. Jakie uprzedzenia mogą być wbudowane w tą analizę? 
+    Możliwe uprzedzenia mogą wynikać z faktu, że dane pochodzą tylko z określonych obszarów (Ontario) oraz z obserwacji tylko tych bielików, które zostały zauważone podczas regularnych sesji monitorujących. Nie mamy więc pełnego obrazu całej populacji bielików, a analiza może pomijać bieliki, które nie zostały objęte tymi obserwacjami.
+
+Ponieważ żadna z tych odpowiedzi nie jest etycznie wątpliwa, uznajemy analizę za uczciwą.
+
+Jak błędny jest ten model? Jeśli sprawdzimy, czy wszystkie założenia modelu są spełnione to okazuje się, że założenie o równości średniej i wariancji $E(Y)=Var(Y)=\lambda$ nie jest spełnione:
+```{r}
+bald_eagles %>% 
+  summarize(mean = mean(count), var = var(count))
+```
+Gdy $Var(Y)>E(Y)$, to mamy do czynienia z nadmierną dyspersją, czyli zmienność $Y$ przekracza przyjęte założenia.
+
+Jak dokładne są modele predykcyjne a posteriori? Przeprowadzimy symulację modeli predykcyjnych a posteriori:
+```{r}
+set.seed(84735)
+poisson_predictions <- posterior_predict(eagles_poisson, newdata = bald_eagles)
+```
+
+Wizualizacja modeli predykcyjnych a posteriori:
+```{r fig.width=6, fig.height=3, dpi=300}
+ppc_intervals(bald_eagles$count, yrep = poisson_predictions, 
+              x = bald_eagles$hours, 
+              prob = 0.5, prob_outer = 0.95) + 
+  labs(title = "Przedziały predykcyjne a posteriori dla orłów bielików",
+       x = "Liczba godzin obserwacji",
+       y = "Liczba bielików")
+```
+
+Wykres przedstawia 50% i 95% przedziałów wiarygodności a posteriori (niebieskie linie) dla liczby zaobserwowanych bielików. Rzeczywista liczba bielików jest reprezentowana przez granatowe kropki. Model wydaje się dobrze przewidywać, ponieważ wiele granatowych kropek znajduje się w obrębie przedziałów predykcyjnych.
+
+Możemy podsumować nasze obserwacje za pomocą funkcji `prediction_summary()`:
+```{r}
+set.seed(84735)
+prediction_summary(model = eagles_poisson, data = bald_eagles)
+```
+Model prognozuje liczbę bielików z błędem średniego błędu absolutnego (MAE = mediana$|Y_i-Y_i'|$) wynoszącym 1.1, co oznacza, że średnio przewidywana liczba bielików różni się o 1.1 od rzeczywistej liczby obserwacji. W skali odchylenia standardowego, ten błąd wynosi 0.71 (MAE scaled = mediana$\frac{|Y_i-Y_i'|}{sd_i}$), co odpowiada 0.71 odchylenia standardowego od średnich prognoz a posteriori. Biorąc pod uwagę zakres liczby obserwacji bielików (od 0 do 12), błąd prognozy wynoszący 1.1 jest stosunkowo mały.
+
+Prognozy modelu mieszczą się w obrębie 95% przedziału prognozowania a posteriori dla wszystkich lat (100%). Oznacza to, że model poprawnie przewidział liczbę bielików w każdym z 37 lat. Dodatkowo, prognozy mieszczą się w obrębie 50% przedziału prognozowania a posteriori w 68% przypadków, co wskazuje na względną precyzję modelu w 2/3 przypadków.
+
+Ocena poprawności prognoz modelu na danych, na których model został zbudowany może prowadzić do zbyt optymistycznych ocen. Nie mamy możliwości zebrania nowych danych, więc podzielimy dane na zbiór uczący i zbiór testowy.
+
+Wykonamy 10-krotną walidację krzyżową (cross-validation) na modelu eagles_poisson stosując dane `bald_eagles`:
+```{r}
+set.seed(84735)
+poisson_cv <- prediction_summary_cv(model = eagles_poisson, 
+                                    data = bald_eagles, k = 10)
+poisson_cv$cv
+```
+Wyniki walidacji krzyżowej są bardzo zbliżone do wyników uzyskanych na całym zbiorze danych, co sugeruje, że model dobrze generalizuje na nowe dane. Model wydaje się być dobrze dopasowany i nie przeuczony, z zadowalającą dokładnością w przewidywaniach, zarówno na zbiorze treningowym, jak i testowym.
+
+## Model regresji ujemno-dwumianowej
+
+Model ujemno-dwumianowy (Negative Binomial) jest przydatny do modelowania zmiennych dyskretnych o wartościach ze zbioru liczb naturalnych, które mają rozkład asymetryczny prawostronnie. W przeciwieństwie do modelu Poissona, model ujemno-dwumianowy nie przyjmuje restrykcyjnego założenia, że $Var(Y)=E(Y)$. Dzięki temu model ujemno-dwumianowy stanowi alternatywę dla modelu Poissona, który nie radzi sobie z nadmierną dyspersją, a także w sytuacjach, gdy dane nie pasują do założeń rozkładu Poissona.
+
+Niech zmienna losowa $Y$ będzie pewną liczbą całkowitą, $Y \in \{0,1,2,\dots\}$, która może być modelowana za pomocą ujemnego rozkładu dwumianowego (Negative Binomial) z parametrem średniej $\mu$ oraz parametrem odwrotnej dyspersji $r$:
+$$Y \mid \mu, r \sim \text{NegBin}(\mu, r).$$
+
+Wówczas $Y$ ma warunkową funkcję masy prawdopodobieństwa:
+$$f(y \mid \mu,r) = \binom{y+r-1}{r} \left( \frac{r}{\mu+r} \right)^r \left( \frac{\mu}{\mu+r} \right)^y, \quad \text{dla } y \in \{0,1,2,\dots\}$$
+ze średnią i wariancją, które nie są sobie równe:
+$$E(Y \mid \mu,r)=\mu, \quad \text{oraz} \quad Var(Y \mid \mu,r)=\mu+\frac{\mu^2}{r}.$$
+
+Dla dużych wartości parametru odwrotnej dyspersji $r$, wariancja zmiennej $Y$ zbliża się do jej wartości oczekiwanej, czyli $Var(Y) \approx E(Y)$, a $Y$ zachowuje się podobnie jak zmienna licznościowa z rozkładu Poissona.
+
+Dla małych wartości $r$, $Var(Y) > E(Y)$ i $Y$ wykazuje nadrozproszenie (overdispersion) w porównaniu do zmiennej Poissona o tej samej wartości oczekiwanej.
+
+Całkowita funkcja wiarygodności dla $n$ obserwacji:
+$$L(\beta_0,\beta_1,\beta_2,r)=\prod_{i=1}^{n} \binom{y_i+r-1}{y_i} \left( \frac{r}{r+\mu_i} \right)^r \left( \frac{\mu_i}{r+\mu_i} \right)^{y_i},$$
+gdzie $\mu_i$ zależy od regresorów $\mu_i = e^{\beta_0 + \beta_1 X_{i1} + \beta_2 X_{i2}}$.
+
+Bardziej użyteczna postać to log-wiarygodność:
+$$\ln L(\beta_0,\beta_1,\beta_2,r)=\sum_{i=1}^{n} \left[ \ln \binom{y_i+r-1}{y_i}+r \ln \frac{r}{r+\mu_i}+y_i\ln \frac{\mu_i}{r+\mu_i} \right].$$
+
+Z twierdzenia Bayesa, rozkład a posteriori współczynników $\beta_0,\beta_1,\beta_2,r$ jest proporcjonalny do iloczynu funkcji wiarygodności i funkcji a priori:
+$$P(\beta_0,\beta_1,\beta_2,r \mid Y) \propto L(\beta_0,\beta_1,\beta_2,r)\cdot P(\beta_0,\beta_1,\beta_2,r).$$
+
+Zamienimy wcześniejszy model Poissona na model ujemno-dwumianowy dodając do niego parametr odwrotnej dyspersji $r>0$ o rozkładzie wykładniczym. Niech model regresji ujemno-dwumianowej wygląda następująco:
+$$Y_i \mid \beta_0,\beta_1,\beta_2,r \sim \text{NegBin}(\mu_i, r), \quad \text{gdzie } \ln(\mu_i)=\beta_0+\beta_1 X_{i1}+\beta_2 X_{i2}.$$
+
+W modelu regresji ujemno-dwumianowej funkcja `stan_glm()` przyjmuje `neg_binomial_2` jako rodzinę rozkładu, zastępując wcześniejszy `poisson`. Parametr `autoscale = TRUE` zapewnia automatyczne przeskalowanie rozkładów a priori, dostosowując je do skali danych:
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+eagles_negbin_model <- stan_glm(
+  count ~ hours + year,
+  data = bald_eagles,
+  family = neg_binomial_2,
+  prior_intercept = normal(1.1, 0.5, autoscale = TRUE),
+  prior = normal(0, 2.5, autoscale = TRUE), 
+  prior_aux = exponential(1, autoscale = TRUE),
+  chains = 4, iter = 5000*2, seed = 84735)
+```
+
+Podsumowanie rozkładów a priori dla każdego z parametrów modelu:
+```{r}
+prior_summary(eagles_negbin_model)
+```
+Z modelu odczytujemy a priori:
+$$\beta_{0c} \sim \mathcal{N}(1.1,0.5^2), \quad \beta_1 \sim \mathcal{N}(0,0.08^2), \quad\beta_2 \sim \mathcal{N}(0,0.23^2), \quad r\sim \text{Exponential}(1),$$
+gdzie $\beta_{0c}$ reprezentuje oczekiwaną logarytmowaną liczbę obserwowanych bielików dla średniej liczby godzin obserwacji i średniego roku w zbiorze danych.
+
+### Symulacja a posteriori
+
+Zaktualizujemy symulację eagles_negbin_model, wskazując `prior_PD = FALSE`:
+```{r echo=TRUE, results='hide', message=FALSE, warning=FALSE}
+eagles_negbin <- update(eagles_negbin_model, prior_PD = FALSE)
+```
+
+Wykresy śladu MCMC, gęstości i autokorelacji potwierdzają, że nasza symulacja się ustabilizowała:
+```{r fig.width=6, fig.height=3, dpi=300}
+mcmc_trace(eagles_negbin)
+mcmc_dens_overlay(eagles_negbin)
+mcmc_acf(eagles_negbin)
+```
+
+Sprawdzimy dopasowanie modelu za pomocą testu "posterior predictive check" (sprawdzanie przewidywań z posteriori):
+```{r fig.width=6, fig.height=3, dpi=300}
+set.seed(84735)
+pp_check(eagles_negbin, plotfun = "hist", nreps = 5, bins = 15) +
+  xlab("Liczba obserwacji bielików")
+
+pp_check(eagles_negbin) +
+  xlab("Liczba obserwacji bielików")
+```
+
+Histogramy pięciu symulacji a posteriori dla danych obserwacji bielików wykazują podobne odchylenie i trendy jak obserwowane dane bielików. Wykres gęstości całkiem dobrze oddaje cechy obserwowaych danych bielików. Jednak zakres wartości symulacji jest szerszy (0-35) niż zakres wartości rzeczywistych (0-16).
+
+### Interpretacja a posteriori
+
+Ponieważ model ujemno-dwumianowy wykorzystuje transformację logarytmiczną, to interpretacja współczynników regresji jest analogiczna do przypadku modelu Poissona. Wyświetlimy wyniki a posteriori z funkcji `tidy()`:
+```{r}
+tidy(eagles_negbin, conf.int = TRUE, conf.level = 0.80)
+```
+Oczekiwaną liczbą zaobserwowanych bielików dla $X_{i1}=0$ i $X_{i2}=0$ jest $e^{-150.4} \approx 4.8\times 10^{-66}$.
+
+Ponieważ 0 znajduje się w przedziale ufności wzpółczynnika `hours` ($\beta_1$), to liczba godzin obserwacji może nie mieć istotnego statystycznie wpływu na liczbę obserwowanych bielików.
+
+Współczynnik `year` ($\beta_2$) ma posteriorową medianę około 0.075. Oznacza to, że z każdym kolejnym rokiem liczba zaobserwowanych bielików rośnie średnio o 7.7% rocznie ($e^{0.075} \approx 1.077$).
+
+### Ocena modelu
+
+Przeprowadzimy symulację modeli predykcyjnych a posteriori aby ocenić ich dokładność:
+```{r}
+set.seed(84735)
+negbin_predictions <- posterior_predict(eagles_negbin, newdata = bald_eagles)
+```
+
+Wizualizacja modeli predykcyjnych a posteriori:
+```{r fig.width=6, fig.height=3, dpi=300}
+ppc_intervals(bald_eagles$count, yrep = negbin_predictions, 
+              x = bald_eagles$hours, 
+              prob = 0.5, prob_outer = 0.95) + 
+  labs(title = "Przedziały predykcyjne a posteriori dla orłów bielików",
+       x = "Liczba godzin obserwacji",
+       y = "Liczba bielików")
+```
+
+Model wydaje się dobrze przewidywać liczbę obserwowanych bielików, ponieważ wiele granatowych kropek znajduje się w obrębie przedziałów predykcyjnych.
+
+Możemy podsumować nasze obserwacje za pomocą funkcji `prediction_summary()`:
+```{r}
+set.seed(84735)
+prediction_summary(model = eagles_negbin, data = bald_eagles)
+```
+Model prognozuje liczbę bielików z błędem średniego błędu absolutnego wynoszącym 1.1, co oznacza, że średnio przewidywana liczba bielików różni się o 1.1 od rzeczywistej liczby obserwacji. W skali odchylenia standardowego, ten błąd wynosi 0.56, co odpowiada 0.56 odchylenia standardowego od średnich prognoz a posteriori. Błąd prognozy modelu ujemno-dwumianowego jest zbliżony do błędu MAE modelu Poissona (1.1), jednak MAE skalowane jest niższe niż w modelu Poissona (0.71).
+
+Model ujemno-dwumianowy również poprawnie przewidział liczbę bielików w każdym z 37 lat. Natowmiast jego prognozy mieszczą się w obrębie 50% przedziału prognozowania a posteriori w 81% przypadków, co wskazuje na względną precyzję modelu w 4/5 przypadków.
+
+
+Wykonamy 10-krotną walidację krzyżową (cross-validation) na modelu eagles_negbin stosując dane `bald_eagles`:
+```{r}
+set.seed(84735)
+negbin_cv <- prediction_summary_cv(model = eagles_negbin, 
+                                    data = bald_eagles, k = 10)
+negbin_cv$cv
+```
+Wyniki walidacji krzyżowej są bardzo zbliżone do wyników uzyskanych na całym zbiorze danych, co sugeruje, że model dobrze generalizuje na nowe dane. Model wydaje się być dobrze dopasowany i nie przeuczony, z zadowalającą dokładnością w przewidywaniach, zarówno na zbiorze treningowym, jak i testowym.
+
+## Ocena i porównanie modeli
+
+Funkcja `loo_compare()` porównuje modele na podstawie oczekiwanej logarytmicznej gęstości predykcyjnej (ELPD), która jest miarą jakości dopasowania modelu do danych przy jednoczesnym uwzględnieniu niepewności. Modele są zazwyczaj uporządkowane od najlepszego do najgorszego (najwyższe ELPD u góry):
+```{r}
+loo_compare(loo(eagles_poisson), loo(eagles_negbin))
+```
+Wynik `elpd_diff` to różnica ELPD między modelami (im wyższa wartość, tym lepiej), natomiast `se_diff` to odchylenie standardowe różnicy ELPD (pokazuje niepewność porównania). Wyniki `loo_compare()` wskazują na bardzo małą różnicę między modelami. Model Poissona i model ujemno-dwumianowy mają niemal taką samą jakość predykcyjną według LOO-CV. To sugeruje, że nadmierna dyspersja nie jest dużym problemem w danych o bielikach.
+
+Zatem który model jest lepszy? Zwykle lepiej jest trzymać się prostszego modelu. Model Poissona ma mniej parametrów i jest łatwiejszy w interpretacji. Porównując wykresy predykcji model ujemno-dwumianowy przewiduje wyższe wartości liczby obserwacji bielików (0-35) niż model Poissona, który jest bardziej zbliżony do wartości rzeczywistych (0-16).
+
+```{r echo=FALSE, fig.width=8, fig.height=3, dpi=300}
+set.seed(84735)
+p1 <- ppc_dens_overlay(y = bald_eagles$count,
+                       yrep = posterior_predict(eagles_poisson, draws = 50)) +
+  labs(title = "Predykcje modelu Poissona",
+       x = "Liczba obserwacji bielików")
+p2 <- ppc_dens_overlay(y = bald_eagles$count,
+                       yrep = posterior_predict(eagles_negbin, draws = 50)) +
+  labs(title = "Predykcje modelu ujemno-dwumianowego",
+       x = "Liczba obserwacji bielików")
+plot_grid(p1,p2)
+```
